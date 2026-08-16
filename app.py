@@ -19,6 +19,24 @@ from src.symbols import BIST_SYMBOLS, DEFAULT_WATCHLIST, label
 
 st.set_page_config(page_title="BIST Kokpit", page_icon="📈", layout="wide")
 
+# Mobil uyumu: telefonda kolonlar alt alta insin, kenar boşlukları daralsın,
+# tablo/grafik ekrana sığsın. (Küçük ekran = <= 640px)
+st.markdown(
+    """
+    <style>
+    @media (max-width: 640px) {
+      [data-testid="stHorizontalBlock"] { flex-wrap: wrap !important; }
+      [data-testid="stHorizontalBlock"] > div { min-width: 100% !important; }
+      .block-container { padding: 2.6rem 0.7rem 1rem !important; }
+      h1 { font-size: 1.6rem !important; }
+    }
+    /* Tablo ve grafikler asla yatay taşmasın, kendi içinde kayabilsin */
+    [data-testid="stDataFrame"], .stPlotlyChart { overflow-x: auto; }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
 DISCLAIMER = (
     "⚠️ Bu araç yalnızca izleme, tarama ve geriye dönük test amaçlıdır. "
     "Gösterilen sinyaller, seçtiğiniz teknik kuralların mekanik sonucudur; "
@@ -76,6 +94,35 @@ with st.sidebar:
 watchlist = tuple(st.session_state["watchlist"])
 
 st.info(DISCLAIMER, icon="⚠️")
+
+with st.expander("ℹ️ Nasıl kullanılır? (sekmelerin açıklaması)"):
+    st.markdown(
+        """
+**👀 İzleme** — Takip listendeki hisselerin son (15 dk gecikmeli) fiyatı, günlük/haftalık
+değişimi, RSI'ı ve "altın çapraz" durumu tek tabloda. Yeşil = artış, kırmızı = düşüş.
+
+**📊 Grafik & Göstergeler** — Seçtiğin hissenin mum grafiği + hareketli ortalamalar
+(SMA50/200, EMA20), RSI ve MACD panelleri. Zaman dilimini (günlük / 15 dakikalık /
+saatlik / haftalık) değiştirebilirsin.
+
+**🔎 Teknik Tarama** — Fiyat/gösterge kurallarıyla hisse tarar
+(örn. "RSI 35'in altındakiler", "altın çaprazı olanlar").
+
+**🧮 Temel Tarama** — Şirketlerin mali verileriyle tarar: F/K, PD/DD, özsermaye
+karlılığı (ROE), temettü verimi — İş Yatırım verisi.
+
+**🧪 Backtest** — Bir stratejinin (SMA kesişimi / RSI / MACD) geçmişte nasıl sonuç
+verdiğini test eder; komisyon dahil, "al & tut" ile kıyaslar.
+
+---
+**Göstergeleri okuma (kısa):**
+- **RSI (0–100):** 30 altı "aşırı satım", 70 üstü "aşırı alım" bölgesi sayılır.
+- **Altın Çapraz:** 50 günlük ortalamanın 200 günlüğün üstüne çıkması (tersi "ölüm çaprazı").
+- **MACD:** İki çizginin kesişimi momentum değişimi olarak okunur.
+
+⚠️ Bunlar mekanik göstergelerdir, **yatırım tavsiyesi değildir**. Karar ve emir sana aittir.
+        """
+    )
 
 tab_watch, tab_chart, tab_screen, tab_fund, tab_bt = st.tabs(
     [
