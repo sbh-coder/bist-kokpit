@@ -233,6 +233,27 @@ def make_price_figure(df: pd.DataFrame, title: str) -> go.Figure:
     return fig
 
 
+def render_stock_detail(sym: str, interval: str, period: str, resample: str | None) -> None:
+    """Tek bir hisse için detaylı görünüm: metrikler + mum/RSI/MACD grafiği."""
+    st.markdown("---")
+    st.subheader(f"🔍 {label(sym)} — detaylı görünüm")
+    with st.spinner("Grafik hazırlanıyor…"):
+        dd = data.get_many((sym,), interval, period, resample)
+        df = dd.get(sym, pd.DataFrame())
+    if df.empty:
+        st.info("Bu hisse için veri gelmedi.")
+        return
+    last, pct = data.last_price_and_change(df)
+    dfi = indicators.add_indicators(df)
+    rsi_val = dfi["RSI"].dropna()
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Son (gecikmeli) fiyat", f"{last:,.2f} ₺" if last else "—")
+    c2.metric("Değişim", f"{pct:+.2f} %" if pct is not None else "—")
+    c3.metric("RSI(14)", f"{rsi_val.iloc[-1]:.1f}" if len(rsi_val) else "—")
+    c4.metric("Zaman dilimi", interval)
+    st.plotly_chart(make_price_figure(df, label(sym)), use_container_width=True)
+
+
 # --------------------------------------------------------------------------
 # TAB 1 — İzleme
 # --------------------------------------------------------------------------
@@ -431,11 +452,50 @@ with tab_screen:
                     shown = shown[
                         shown["Kod"].astype(str).str.upper().str.contains(q, na=False)
                     ]
+                # Çoklu öncelikli sıralama (önce → sonra)
+                with st.expander("↕️ Sıralama (birden çok kolon — öncelik sırasıyla)"):
+                    sort_cols = st.multiselect(
+                        "Önce şuna, sonra şuna… (seçim sırası = öncelik)",
+                        options=list(shown.columns),
+                        default=(["Eşleşme"] if "Eşleşme" in shown.columns else []),
+                        key="tk_sort_cols",
+                    )
+                    asc = {}
+                    for c in sort_cols:
+                        asc[c] = st.checkbox(
+                            f"“{c}” artan (küçük→büyük)", value=False, key=f"tk_asc_{c}"
+                        )
+                if sort_cols:
+                    shown = shown.sort_values(
+                        by=sort_cols,
+                        ascending=[asc[c] for c in sort_cols],
+                        kind="mergesort",  # kararlı: eşitlikte önceki sıra korunur
+                    )
+
                 st.write(
                     f"**{len(shown)}** hisse gösteriliyor "
-                    f"(eşleşen: {len(res)} · taranan: {st.session_state.get('tk_scanned', '?')})."
+                    f"(eşleşen: {len(res)} · taranan: {st.session_state.get('tk_scanned', '?')}). "
+                    "Bir satıra tıklayınca altta o hissenin detayı açılır."
                 )
-                st.dataframe(shown, use_container_width=True, hide_index=True)
+                ev = st.dataframe(
+                    shown,
+                    use_container_width=True,
+                    hide_index=True,
+                    on_select="rerun",
+                    selection_mode="single-row",
+                    key="tk_table",
+                )
+                sel_rows = []
+                try:
+                    sel_rows = list(ev.selection["rows"])
+                except Exception:
+                    try:
+                        sel_rows = list(ev.selection.rows)
+                    except Exception:
+                        sel_rows = []
+                if sel_rows and sel_rows[0] < len(shown):
+                    _dsym = str(shown.iloc[sel_rows[0]]["Kod"]) + ".IS"
+                    render_stock_detail(_dsym, tk_interval, tk_period, tk_resample)
     else:
         st.markdown("**Kendi kuralını kur:**")
         f1, f2, f3 = st.columns(3)
