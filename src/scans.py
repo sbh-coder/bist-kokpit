@@ -53,7 +53,7 @@ def _prep(df: pd.DataFrame) -> dict:
     boll = ind.bollinger(c, 20, 2.0)
     vol = df["Volume"] if "Volume" in df else pd.Series(index=df.index, dtype=float)
     return {
-        "c": c, "h": df["High"], "l": df["Low"], "v": vol,
+        "c": c, "o": df["Open"], "h": df["High"], "l": df["Low"], "v": vol,
         "sma20": ind.sma(c, 20), "sma50": ind.sma(c, 50), "sma200": ind.sma(c, 200),
         "rsi": ind.rsi(c, 14),
         "macd": macd["macd"], "signal": macd["signal"],
@@ -191,6 +191,84 @@ def _strong_down(x):
     return ch <= -5.0, f"son bar %{ch:.1f}"
 
 
+# --- Mum (candlestick) formasyonları — son bar(lar)dan hesaplanır ---
+def _ohlc(x, i):
+    return (
+        float(x["o"].iloc[i]), float(x["h"].iloc[i]),
+        float(x["l"].iloc[i]), float(x["c"].iloc[i]),
+    )
+
+
+def _doji(x):
+    o, h, l, c = _ohlc(x, -1)
+    rng = h - l
+    return (rng > 0 and abs(c - o) <= 0.1 * rng), "doji (kararsızlık)"
+
+
+def _hammer(x):
+    o, h, l, c = _ohlc(x, -1)
+    rng = h - l
+    if rng <= 0:
+        return False, ""
+    body = abs(c - o)
+    lower = min(o, c) - l
+    upper = h - max(o, c)
+    return (body > 0 and lower >= 2 * body and upper <= body), "çekiç (boğa dönüş)"
+
+
+def _shooting_star(x):
+    o, h, l, c = _ohlc(x, -1)
+    rng = h - l
+    if rng <= 0:
+        return False, ""
+    body = abs(c - o)
+    lower = min(o, c) - l
+    upper = h - max(o, c)
+    return (body > 0 and upper >= 2 * body and lower <= body), "kayan yıldız (ayı dönüş)"
+
+
+def _bull_engulf(x):
+    o1, _, _, c1 = _ohlc(x, -2)
+    o0, _, _, c0 = _ohlc(x, -1)
+    return (c1 < o1 and c0 > o0 and o0 <= c1 and c0 >= o1), "yutan boğa"
+
+
+def _bear_engulf(x):
+    o1, _, _, c1 = _ohlc(x, -2)
+    o0, _, _, c0 = _ohlc(x, -1)
+    return (c1 > o1 and c0 < o0 and o0 >= c1 and c0 <= o1), "yutan ayı"
+
+
+def _morning_star(x):
+    o2, _, _, c2 = _ohlc(x, -3)
+    o1, _, _, c1 = _ohlc(x, -2)
+    o0, _, _, c0 = _ohlc(x, -1)
+    b2 = abs(c2 - o2)
+    return (
+        c2 < o2 and b2 > 0 and abs(c1 - o1) <= 0.5 * b2
+        and c0 > o0 and c0 > (o2 + c2) / 2
+    ), "sabah yıldızı"
+
+
+def _evening_star(x):
+    o2, _, _, c2 = _ohlc(x, -3)
+    o1, _, _, c1 = _ohlc(x, -2)
+    o0, _, _, c0 = _ohlc(x, -1)
+    b2 = abs(c2 - o2)
+    return (
+        c2 > o2 and b2 > 0 and abs(c1 - o1) <= 0.5 * b2
+        and c0 < o0 and c0 < (o2 + c2) / 2
+    ), "akşam yıldızı"
+
+
+def _marubozu(x):
+    o, h, l, c = _ohlc(x, -1)
+    rng = h - l
+    if rng <= 0:
+        return False, ""
+    return abs(c - o) >= 0.9 * rng, "marubozu (%s)" % ("boğa" if c > o else "ayı")
+
+
 # {Görünen ad: (açıklama, fonksiyon)}. "bar" = seçilen zaman diliminin çubuğu.
 SCANS: dict[str, tuple[str, object]] = {
     # Trend & Ortalamalar
@@ -222,6 +300,15 @@ SCANS: dict[str, tuple[str, object]] = {
     "Hacim Patlaması (2x ortalama)": ("Son bar hacmi, 20 bar ortalamasının 2 katından fazla.", _vol_spike),
     "Sert Yükseliş (son bar ≥ %5)": ("Son bar değişimi +%5 ve üzeri.", _strong_up),
     "Sert Düşüş (son bar ≤ -%5)": ("Son bar değişimi -%5 ve altı.", _strong_down),
+    # Mum (candlestick) formasyonları
+    "Mum: Doji": ("Açılış ≈ kapanış — kararsızlık/dönüş adayı.", _doji),
+    "Mum: Çekiç (Hammer)": ("Küçük gövde + uzun alt fitil — boğa dönüş sinyali.", _hammer),
+    "Mum: Kayan Yıldız": ("Küçük gövde + uzun üst fitil — ayı dönüş sinyali.", _shooting_star),
+    "Mum: Yutan Boğa": ("Yükselen mum, önceki düşen mumu yutuyor — boğa.", _bull_engulf),
+    "Mum: Yutan Ayı": ("Düşen mum, önceki yükselen mumu yutuyor — ayı.", _bear_engulf),
+    "Mum: Sabah Yıldızı": ("3 mumluk boğa dönüş formasyonu.", _morning_star),
+    "Mum: Akşam Yıldızı": ("3 mumluk ayı dönüş formasyonu.", _evening_star),
+    "Mum: Marubozu": ("Fitilsiz güçlü gövde — güçlü yön.", _marubozu),
 }
 
 

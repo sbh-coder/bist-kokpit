@@ -14,7 +14,17 @@ import plotly.graph_objects as go
 import streamlit as st
 from plotly.subplots import make_subplots
 
-from src import auth, backtest, data, fundamental, indicators, scans, screener, symbols
+from src import (
+    auth,
+    backtest,
+    data,
+    fundamental,
+    indicators,
+    markets,
+    scans,
+    screener,
+    symbols,
+)
 from src.symbols import BIST_SYMBOLS, DEFAULT_WATCHLIST, label
 
 st.set_page_config(page_title="BIST Kokpit", page_icon="📈", layout="wide")
@@ -51,11 +61,17 @@ st.title("📈 BIST Kokpit")
 if not auth.require_login():
     st.stop()
 
-# borsapy varsa tüm BIST evrenini (797 hisse) izleme-listesi seçeneklerine ekle.
-# Yoksa sessizce curated ~40 hisseyle devam eder.
-_universe = fundamental.universe()
-if _universe:
-    symbols.register(_universe)
+# İzleme evreni: Yıldız + Ana Pazar (markets.py, KAP sınıflandırması).
+# Liste eksik/az ise borsapy'nin tam BIST evrenine düşer (yedek).
+_yildiz_ana = getattr(markets, "YILDIZ_ANA", {})
+if len(_yildiz_ana) >= 100:
+    UNIVERSE = _yildiz_ana
+    UNIVERSE_LABEL = "Yıldız + Ana Pazar"
+else:
+    UNIVERSE = fundamental.universe()
+    UNIVERSE_LABEL = "Tüm BIST"
+if UNIVERSE:
+    symbols.register(UNIVERSE)
 
 # --------------------------------------------------------------------------
 # Kenar çubuğu — izleme listesi ve ayarlar
@@ -66,10 +82,10 @@ if "watchlist" not in st.session_state:
 with st.sidebar:
     st.header("İzleme Listesi")
     all_bist = st.checkbox(
-        f"🌐 Tüm BIST'i izle ({len(symbols.ALL_NAMES)} hisse)",
+        f"🌟 Hepsini izle — {UNIVERSE_LABEL} ({len(UNIVERSE)} hisse)",
         value=False,
-        help="Tüm BIST hisselerini izleme listesine alır. İlk yükleme birkaç dakika "
-        "sürebilir ve veri kaynağı (Yahoo) yoğunlukta geçici sınır koyabilir.",
+        help=f"{UNIVERSE_LABEL} hisselerinin tamamını izleme listesine alır. İlk "
+        "yükleme birkaç dakika sürebilir ve Yahoo yoğunlukta geçici sınır koyabilir.",
     )
     known = list(symbols.ALL_NAMES.keys())
     # Listede olmayan ama kullanıcının eklediği kodlar da seçili kalabilsin
@@ -391,31 +407,35 @@ with tab_screen:
         if res is not None:
             if res.empty:
                 st.info("Eşleşen hisse bulunamadı.")
-            elif st.session_state.get("tk_is_matrix"):
-                scan_cols = [
-                    c for c in res.columns
-                    if c not in ("Kod", "Fiyat", "Değişim %", "Eşleşme")
-                ]
-                req = st.multiselect(
-                    "🔎 Filtre: sadece şu taramalarda ✓ olanları göster "
-                    "(seçilenlerin HEPSİNİ birden karşılayanlar)",
-                    options=scan_cols,
-                    key="tk_filter",
-                )
+            else:
                 shown = res
-                for col in req:
-                    shown = shown[shown[col] == "✓"]
+                # Matris ise: tarama bazında ✓ filtresi
+                if st.session_state.get("tk_is_matrix"):
+                    scan_cols = [
+                        c for c in res.columns
+                        if c not in ("Kod", "Fiyat", "Değişim %", "Eşleşme")
+                    ]
+                    req = st.multiselect(
+                        "🔎 Tarama filtresi: sadece şu taramalarda ✓ olanlar "
+                        "(seçilenlerin HEPSİNİ birden karşılayanlar)",
+                        options=scan_cols,
+                        key="tk_filter",
+                    )
+                    for col in req:
+                        shown = shown[shown[col] == "✓"]
+                # Kod arama (her iki modda da)
+                q = st.text_input(
+                    "🔎 Sonuçlarda kod ara (örn. GARAN)", key="tk_search"
+                ).strip().upper()
+                if q:
+                    shown = shown[
+                        shown["Kod"].astype(str).str.upper().str.contains(q, na=False)
+                    ]
                 st.write(
                     f"**{len(shown)}** hisse gösteriliyor "
                     f"(eşleşen: {len(res)} · taranan: {st.session_state.get('tk_scanned', '?')})."
                 )
                 st.dataframe(shown, use_container_width=True, hide_index=True)
-            else:
-                st.write(
-                    f"**{len(res)}** hisse eşleşti "
-                    f"(taranan: {st.session_state.get('tk_scanned', '?')})."
-                )
-                st.dataframe(res, use_container_width=True, hide_index=True)
     else:
         st.markdown("**Kendi kuralını kur:**")
         f1, f2, f3 = st.columns(3)
