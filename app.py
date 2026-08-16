@@ -382,11 +382,40 @@ with tab_screen:
                         res = scans.run_scan(selected_scans[0], d)
                     else:
                         res = scans.run_scans(selected_scans, d)
-                st.write(f"**{len(res)}** hisse eşleşti (taranan: {len(d)}).")
-                if not res.empty:
-                    st.dataframe(res, use_container_width=True, hide_index=True)
-                else:
-                    st.info("Eşleşen hisse bulunamadı.")
+                st.session_state["tk_res"] = res
+                st.session_state["tk_is_matrix"] = len(selected_scans) > 1
+                st.session_state["tk_scanned"] = len(d)
+
+        # Sonuç (session'da tutulur; filtre değişince yeniden taramaya gerek yok)
+        res = st.session_state.get("tk_res")
+        if res is not None:
+            if res.empty:
+                st.info("Eşleşen hisse bulunamadı.")
+            elif st.session_state.get("tk_is_matrix"):
+                scan_cols = [
+                    c for c in res.columns
+                    if c not in ("Kod", "Fiyat", "Değişim %", "Eşleşme")
+                ]
+                req = st.multiselect(
+                    "🔎 Filtre: sadece şu taramalarda ✓ olanları göster "
+                    "(seçilenlerin HEPSİNİ birden karşılayanlar)",
+                    options=scan_cols,
+                    key="tk_filter",
+                )
+                shown = res
+                for col in req:
+                    shown = shown[shown[col] == "✓"]
+                st.write(
+                    f"**{len(shown)}** hisse gösteriliyor "
+                    f"(eşleşen: {len(res)} · taranan: {st.session_state.get('tk_scanned', '?')})."
+                )
+                st.dataframe(shown, use_container_width=True, hide_index=True)
+            else:
+                st.write(
+                    f"**{len(res)}** hisse eşleşti "
+                    f"(taranan: {st.session_state.get('tk_scanned', '?')})."
+                )
+                st.dataframe(res, use_container_width=True, hide_index=True)
     else:
         st.markdown("**Kendi kuralını kur:**")
         f1, f2, f3 = st.columns(3)
