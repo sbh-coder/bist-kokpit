@@ -24,6 +24,7 @@ from src import (
     scans,
     screener,
     symbols,
+    tvscan,
 )
 from src.symbols import BIST_SYMBOLS, DEFAULT_WATCHLIST, label
 
@@ -238,10 +239,14 @@ def render_stock_detail(sym: str, interval: str, period: str, resample: str | No
     st.markdown("---")
     st.subheader(f"🔍 {label(sym)} — detaylı görünüm")
     with st.spinner("Grafik hazırlanıyor…"):
-        dd = data.get_many((sym,), interval, period, resample)
-        df = dd.get(sym, pd.DataFrame())
+        df = data.get_history(sym, period=period, interval=interval)
+        if resample and not df.empty:
+            df = data._resample(df, resample)
     if df.empty:
-        st.info("Bu hisse için veri gelmedi.")
+        st.info(
+            "Bu hisse için veri gelmedi (Yahoo geçici sınır koymuş olabilir; "
+            "kenar çubuğundan 'Verileri yenile'yi deneyip tekrar seçin)."
+        )
         return
     last, pct = data.last_price_and_change(df)
     dfi = indicators.add_indicators(df)
@@ -423,79 +428,56 @@ with tab_screen:
                 st.session_state["tk_is_matrix"] = len(selected_scans) > 1
                 st.session_state["tk_scanned"] = len(d)
 
-        # Sonuç (session'da tutulur; filtre değişince yeniden taramaya gerek yok)
-        res = st.session_state.get("tk_res")
-        if res is not None:
-            if res.empty:
-                st.info("Eşleşen hisse bulunamadı.")
+    # ---- Mod 2: TradingView (sunucu-taraflı, hızlı) ----
+    elif tk_mode == "TradingView":
+        if not tvscan.is_available():
+            st.warning("TradingView taraması için `borsapy` gerekli, şu an kullanılamıyor.")
+        else:
+            st.caption(
+                "Filtreleme TradingView sunucusunda yapılır — tüm evreni saniyeler "
+                "içinde tarar (~15 dk gecikmeli). Zaman dilimi yukarıdaki seçicidendir."
+            )
+            tv_uni_choice = st.selectbox(
+                "Evren",
+                options=["Yıldız + Ana Pazar", "İzleme listem", "XU030", "XU050", "XU100", "XBANK"],
+                key="tv_uni",
+            )
+            tv_preset = st.selectbox(
+                "Hazır koşul", options=list(tvscan.TV_PRESETS.keys()), key="tv_preset"
+            )
+            tv_custom = st.text_input(
+                "Özel koşul (gelişmiş — boşsa yukarıdaki kullanılır)",
+                placeholder="örn: rsi < 30 and close > sma_50",
+                key="tv_custom",
+            ).strip()
+            st.caption(
+                "Alanlar: rsi · sma_50 · ema_20 · macd · signal · bb_lower/upper · "
+                "adx · stoch_k · volume · close · change_percent  ·  "
+                "kesişim: crosses_above / crosses_below"
+            )
+            if tv_uni_choice == "Yıldız + Ana Pazar":
+                tv_universe = tuple(s.replace(".IS", "") for s in UNIVERSE)
+            elif tv_uni_choice == "İzleme listem":
+                tv_universe = tuple(s.replace(".IS", "") for s in watchlist)
             else:
-                shown = res
-                # Matris ise: tarama bazında ✓ filtresi
-                if st.session_state.get("tk_is_matrix"):
-                    scan_cols = [
-                        c for c in res.columns
-                        if c not in ("Kod", "Fiyat", "Değişim %", "Eşleşme")
-                    ]
-                    req = st.multiselect(
-                        "🔎 Tarama filtresi: sadece şu taramalarda ✓ olanlar "
-                        "(seçilenlerin HEPSİNİ birden karşılayanlar)",
-                        options=scan_cols,
-                        key="tk_filter",
-                    )
-                    for col in req:
-                        shown = shown[shown[col] == "✓"]
-                # Kod arama (her iki modda da)
-                q = st.text_input(
-                    "🔎 Sonuçlarda kod ara (örn. GARAN)", key="tk_search"
-                ).strip().upper()
-                if q:
-                    shown = shown[
-                        shown["Kod"].astype(str).str.upper().str.contains(q, na=False)
-                    ]
-                # Çoklu öncelikli sıralama (önce → sonra)
-                with st.expander("↕️ Sıralama (birden çok kolon — öncelik sırasıyla)"):
-                    sort_cols = st.multiselect(
-                        "Önce şuna, sonra şuna… (seçim sırası = öncelik)",
-                        options=list(shown.columns),
-                        default=(["Eşleşme"] if "Eşleşme" in shown.columns else []),
-                        key="tk_sort_cols",
-                    )
-                    asc = {}
-                    for c in sort_cols:
-                        asc[c] = st.checkbox(
-                            f"“{c}” artan (küçük→büyük)", value=False, key=f"tk_asc_{c}"
-                        )
-                if sort_cols:
-                    shown = shown.sort_values(
-                        by=sort_cols,
-                        ascending=[asc[c] for c in sort_cols],
-                        kind="mergesort",  # kararlı: eşitlikte önceki sıra korunur
-                    )
-
-                st.write(
-                    f"**{len(shown)}** hisse gösteriliyor "
-                    f"(eşleşen: {len(res)} · taranan: {st.session_state.get('tk_scanned', '?')}). "
-                    "Bir satıra tıklayınca altta o hissenin detayı açılır."
-                )
-                ev = st.dataframe(
-                    shown,
-                    use_container_width=True,
-                    hide_index=True,
-                    on_select="rerun",
-                    selection_mode="single-row",
-                    key="tk_table",
-                )
-                sel_rows = []
-                try:
-                    sel_rows = list(ev.selection["rows"])
-                except Exception:
+                tv_universe = tv_uni_choice
+            cond = tv_custom or tvscan.TV_PRESETS[tv_preset]
+            if st.button("🔎 TradingView Tara", type="primary", key="tk_run_tv"):
+                if isinstance(tv_universe, tuple) and not tv_universe:
+                    st.warning("Taranacak hisse yok.")
+                else:
                     try:
-                        sel_rows = list(ev.selection.rows)
-                    except Exception:
-                        sel_rows = []
-                if sel_rows and sel_rows[0] < len(shown):
-                    _dsym = str(shown.iloc[sel_rows[0]]["Kod"]) + ".IS"
-                    render_stock_detail(_dsym, tk_interval, tk_period, tk_resample)
+                        with st.spinner("TradingView taranıyor…"):
+                            res = tvscan.run(tv_universe, cond, tvscan.TV_INTERVALS[tk_tf])
+                        st.session_state["tk_res"] = res
+                        st.session_state["tk_is_matrix"] = False
+                        st.session_state["tk_scanned"] = (
+                            len(tv_universe) if isinstance(tv_universe, tuple) else tv_uni_choice
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        st.error(f"TradingView taraması başarısız: {exc}")
+
+    # ---- Mod 3: Özel kural (yfinance) ----
     else:
         st.markdown("**Kendi kuralını kur:**")
         f1, f2, f3 = st.columns(3)
@@ -508,7 +490,6 @@ with tab_screen:
         with f3:
             use_daymove = st.checkbox("Min. günlük %", value=False)
             min_day = st.slider("Günlük % ≥", -10.0, 10.0, 0.0, 0.5, disabled=not use_daymove)
-
         if st.button("🔎 Tara", type="primary", key="tk_run_custom"):
             if not tk_universe:
                 st.warning("Taranacak hisse yok.")
@@ -525,13 +506,97 @@ with tab_screen:
                         only_above_sma50=only_above50,
                         min_day_pct=min_day if use_daymove else None,
                     )
-                st.write(f"**{len(res)}** hisse kurala uydu (taranan: {len(base)}).")
-                if not res.empty:
-                    st.dataframe(
-                        res.drop(columns=["_symbol"], errors="ignore"),
-                        use_container_width=True,
-                        hide_index=True,
+                st.session_state["tk_res"] = res.drop(columns=["_symbol"], errors="ignore")
+                st.session_state["tk_is_matrix"] = False
+                st.session_state["tk_scanned"] = len(base)
+
+    # ---- Ortak sonuç gösterimi (tüm modlar) ----
+    res = st.session_state.get("tk_res")
+    if res is not None:
+        if res.empty:
+            st.info("Eşleşen hisse bulunamadı.")
+        else:
+            shown = res
+            # Matris ise: tarama bazında ✓ filtresi
+            if st.session_state.get("tk_is_matrix"):
+                scan_cols = [
+                    c for c in res.columns
+                    if c not in ("Kod", "Fiyat", "Değişim %", "Eşleşme")
+                ]
+                req = st.multiselect(
+                    "🔎 Tarama filtresi: sadece şu taramalarda ✓ olanlar "
+                    "(seçilenlerin HEPSİNİ birden karşılayanlar)",
+                    options=scan_cols,
+                    key="tk_filter",
+                )
+                for col in req:
+                    shown = shown[shown[col] == "✓"]
+            # Kod arama
+            qcode = st.text_input(
+                "🔎 Sonuçlarda kod ara (örn. GARAN)", key="tk_search"
+            ).strip().upper()
+            if qcode and "Kod" in shown.columns:
+                shown = shown[
+                    shown["Kod"].astype(str).str.upper().str.contains(qcode, na=False)
+                ]
+
+            # Çoklu öncelikli sıralama — 1. öncelik önce uygulanır (soldan sağa)
+            st.markdown("**↕️ Sıralama** (soldan sağa = öncelik sırası):")
+            _opts = ["—"] + list(shown.columns)
+            _def = [
+                "Eşleşme" if "Eşleşme" in shown.columns else "—",
+                "Değişim %" if "Değişim %" in shown.columns else "—",
+                "—",
+            ]
+            _scols = st.columns(3)
+            sort_spec = []
+            for _i in range(3):
+                with _scols[_i]:
+                    _col = st.selectbox(
+                        f"{_i + 1}. öncelik",
+                        options=_opts,
+                        index=_opts.index(_def[_i]) if _def[_i] in _opts else 0,
+                        key=f"tk_sortcol_{_i}",
                     )
+                    _dir = st.selectbox(
+                        f"{_i + 1}. yön",
+                        options=["Azalan (büyük→küçük)", "Artan (küçük→büyük)"],
+                        key=f"tk_sortdir_{_i}",
+                        label_visibility="collapsed",
+                    )
+                if _col != "—" and _col in shown.columns:
+                    sort_spec.append((_col, _dir.startswith("Artan")))
+            if sort_spec:
+                shown = shown.sort_values(
+                    by=[c for c, _ in sort_spec],
+                    ascending=[a for _, a in sort_spec],
+                    kind="mergesort",  # kararlı sıralama
+                )
+
+            st.write(
+                f"**{len(shown)}** hisse gösteriliyor "
+                f"(eşleşen: {len(res)} · taranan: {st.session_state.get('tk_scanned', '?')}). "
+                "Bir satıra tıklayınca altta o hissenin detayı açılır."
+            )
+            ev = st.dataframe(
+                shown,
+                use_container_width=True,
+                hide_index=True,
+                on_select="rerun",
+                selection_mode="single-row",
+                key="tk_table",
+            )
+            sel_rows = []
+            try:
+                sel_rows = list(ev.selection["rows"])
+            except Exception:
+                try:
+                    sel_rows = list(ev.selection.rows)
+                except Exception:
+                    sel_rows = []
+            if sel_rows and "Kod" in shown.columns and sel_rows[0] < len(shown):
+                _dsym = str(shown.iloc[sel_rows[0]]["Kod"]) + ".IS"
+                render_stock_detail(_dsym, tk_interval, tk_period, tk_resample)
 
 
 # --------------------------------------------------------------------------
