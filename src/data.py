@@ -92,6 +92,61 @@ def get_many_daily(symbols: tuple[str, ...], period: str = "1y") -> dict[str, pd
     return result
 
 
+def _resample(df: pd.DataFrame, rule: str) -> pd.DataFrame:
+    """Bir OHLCV tablosunu daha üst zaman dilimine toplar (örn. 1h -> 4h)."""
+    if df is None or df.empty:
+        return pd.DataFrame()
+    agg = {"Open": "first", "High": "max", "Low": "min", "Close": "last", "Volume": "sum"}
+    have = {k: v for k, v in agg.items() if k in df.columns}
+    return df.resample(rule).agg(have).dropna(how="any")
+
+
+@st.cache_data(ttl=_CACHE_TTL, show_spinner=False)
+def get_many(
+    symbols: tuple[str, ...],
+    interval: str = "1d",
+    period: str = "2y",
+    resample: str | None = None,
+) -> dict[str, pd.DataFrame]:
+    """Birden çok hisse için istenen zaman diliminde OHLCV (batched).
+
+    interval: yfinance aralığı ("15m", "1h", "1d", "1wk", "1mo"…).
+    resample: verilirse (örn. "4h") her sembol o kurala göre yeniden toplanır
+    (yfinance 4 saatlik veri vermediği için 1 saatlikten türetilir).
+    """
+    if not symbols:
+        return {}
+    try:
+        raw = yf.download(
+            list(symbols), period=period, interval=interval, auto_adjust=True,
+            group_by="ticker", threads=True, progress=False,
+        )
+    except Exception as exc:  # noqa: BLE001
+        st.warning(f"Toplu veri çekilemedi: {exc}")
+        return {}
+    if raw is None or raw.empty:
+        return {}
+
+    result: dict[str, pd.DataFrame] = {}
+    if len(symbols) == 1:
+        cleaned = _clean(raw)
+        if resample:
+            cleaned = _resample(cleaned, resample)
+        return {symbols[0]: cleaned} if not cleaned.empty else {}
+
+    for sym in symbols:
+        try:
+            sub = raw[sym]
+        except Exception:  # noqa: BLE001
+            continue
+        cleaned = _clean(sub)
+        if resample:
+            cleaned = _resample(cleaned, resample)
+        if not cleaned.empty:
+            result[sym] = cleaned
+    return result
+
+
 def last_price_and_change(df: pd.DataFrame) -> tuple[float | None, float | None]:
     """Son (gecikmeli) kapanış ve bir önceki kapanışa göre % değişim."""
     if df is None or df.empty or "Close" not in df or len(df) < 1:
@@ -111,3 +166,4 @@ def clear_cache() -> None:
     """Kullanıcı 'Yenile' derse önbelleği temizle."""
     get_history.clear()
     get_many_daily.clear()
+    get_many.clear()

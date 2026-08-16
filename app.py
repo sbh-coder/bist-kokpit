@@ -14,7 +14,7 @@ import plotly.graph_objects as go
 import streamlit as st
 from plotly.subplots import make_subplots
 
-from src import auth, backtest, data, fundamental, indicators, screener, symbols
+from src import auth, backtest, data, fundamental, indicators, scans, screener, symbols
 from src.symbols import BIST_SYMBOLS, DEFAULT_WATCHLIST, label
 
 st.set_page_config(page_title="BIST Kokpit", page_icon="📈", layout="wide")
@@ -286,51 +286,97 @@ with tab_chart:
 # TAB 3 — Teknik Tarama (yfinance verisi)
 # --------------------------------------------------------------------------
 with tab_screen:
-    st.subheader("Teknik kurallara göre tara")
+    st.subheader("Teknik Tarama")
     st.caption(
-        "Fiyat/gösterge tabanlı tarama (yfinance). Temettü, F/K gibi TEMEL "
-        "kriterler için '🧮 Temel Tarama' sekmesini kullanın."
+        f"En sık kullanılan {len(scans.SCANS)} hazır teknik tarama (yfinance verisi). "
+        "Sonuçlar mekanik kurallardır, yatırım tavsiyesi değildir. Temel kriterler "
+        "(F/K, ROE…) için '🧮 Temel Tarama' sekmesini kullanın."
     )
-    universe_choice = st.radio(
+    tk_uni_choice = st.radio(
         "Evren",
         options=["İzleme listem", f"Öne çıkan liste ({len(BIST_SYMBOLS)} hisse)"],
         horizontal=True,
+        key="tk_uni",
     )
-    universe = watchlist if universe_choice == "İzleme listem" else tuple(BIST_SYMBOLS.keys())
+    tk_universe = (
+        watchlist if tk_uni_choice == "İzleme listem" else tuple(BIST_SYMBOLS.keys())
+    )
 
-    st.markdown("**Kurallar** (kendi kuralınızı kurun):")
-    f1, f2, f3 = st.columns(3)
-    with f1:
-        use_rsi = st.checkbox("RSI üst sınırı", value=True)
-        rsi_max = st.slider("RSI ≤", 5, 95, 35, disabled=not use_rsi)
-    with f2:
-        only_golden = st.checkbox("Sadece Altın Çapraz (50>200)", value=False)
-        only_above50 = st.checkbox("Fiyat 50 günlük üstünde", value=False)
-    with f3:
-        use_daymove = st.checkbox("Min. günlük %", value=False)
-        min_day = st.slider("Günlük % ≥", -10.0, 10.0, 0.0, 0.5, disabled=not use_daymove)
+    # Zaman dilimi -> (yfinance aralığı, veri süresi, yeniden-toplama kuralı)
+    TF = {
+        "15 dakika": ("15m", "60d", None),
+        "1 saat": ("1h", "730d", None),
+        "4 saat": ("1h", "730d", "4h"),
+        "1 gün": ("1d", "2y", None),
+        "1 hafta": ("1wk", "10y", None),
+        "1 ay": ("1mo", "max", None),
+    }
+    tk_tf = st.selectbox("Zaman dilimi", options=list(TF.keys()), index=3, key="tk_tf")
+    tk_interval, tk_period, tk_resample = TF[tk_tf]
+    if tk_interval in ("15m", "1h"):
+        st.caption(
+            "⏱️ Kısa zaman dilimlerinde çok hisse taramak biraz uzun sürebilir; "
+            "veriler ~15 dk gecikmelidir. ('gün/hafta' ifadeleri seçilen zaman "
+            "dilimindeki bar sayısı olarak hesaplanır.)"
+        )
 
-    if st.button("🔎 Tara", type="primary"):
-        if not universe:
-            st.warning("Taranacak hisse yok.")
-        else:
-            with st.spinner("Taranıyor…"):
-                scan_data = data.get_many_daily(tuple(universe), period="1y")
-                base = screener.build_table(scan_data)
-                res = screener.apply_filters(
-                    base,
-                    rsi_max=rsi_max if use_rsi else None,
-                    only_golden_cross=only_golden,
-                    only_above_sma50=only_above50,
-                    min_day_pct=min_day if use_daymove else None,
-                )
-            st.write(f"**{len(res)}** hisse kurallara uydu (toplam {len(base)} taranan).")
-            if not res.empty:
-                st.dataframe(
-                    res.drop(columns=["_symbol"], errors="ignore"),
-                    use_container_width=True,
-                    hide_index=True,
-                )
+    tk_mode = st.radio(
+        "Tarama türü", ["Hazır taramalar", "Özel kural"], horizontal=True, key="tk_mode"
+    )
+
+    if tk_mode == "Hazır taramalar":
+        scan_name = st.selectbox("Tarama seç", options=list(scans.SCANS.keys()), key="tk_scan")
+        st.caption("ℹ️ " + scans.SCANS[scan_name][0])
+        if st.button("🔎 Tara", type="primary", key="tk_run_preset"):
+            if not tk_universe:
+                st.warning("Taranacak hisse yok.")
+            else:
+                with st.spinner("Taranıyor…"):
+                    d = data.get_many(
+                        tuple(tk_universe), tk_interval, tk_period, tk_resample
+                    )
+                    res = scans.run_scan(scan_name, d)
+                st.write(f"**{len(res)}** hisse eşleşti (taranan: {len(d)}).")
+                if not res.empty:
+                    st.dataframe(res, use_container_width=True, hide_index=True)
+                else:
+                    st.info("Bu taramaya uyan hisse bulunamadı.")
+    else:
+        st.markdown("**Kendi kuralını kur:**")
+        f1, f2, f3 = st.columns(3)
+        with f1:
+            use_rsi = st.checkbox("RSI üst sınırı", value=True)
+            rsi_max = st.slider("RSI ≤", 5, 95, 35, disabled=not use_rsi)
+        with f2:
+            only_golden = st.checkbox("Sadece Altın Çapraz (50>200)", value=False)
+            only_above50 = st.checkbox("Fiyat 50 günlük üstünde", value=False)
+        with f3:
+            use_daymove = st.checkbox("Min. günlük %", value=False)
+            min_day = st.slider("Günlük % ≥", -10.0, 10.0, 0.0, 0.5, disabled=not use_daymove)
+
+        if st.button("🔎 Tara", type="primary", key="tk_run_custom"):
+            if not tk_universe:
+                st.warning("Taranacak hisse yok.")
+            else:
+                with st.spinner("Taranıyor…"):
+                    scan_data = data.get_many(
+                        tuple(tk_universe), tk_interval, tk_period, tk_resample
+                    )
+                    base = screener.build_table(scan_data)
+                    res = screener.apply_filters(
+                        base,
+                        rsi_max=rsi_max if use_rsi else None,
+                        only_golden_cross=only_golden,
+                        only_above_sma50=only_above50,
+                        min_day_pct=min_day if use_daymove else None,
+                    )
+                st.write(f"**{len(res)}** hisse kurala uydu (taranan: {len(base)}).")
+                if not res.empty:
+                    st.dataframe(
+                        res.drop(columns=["_symbol"], errors="ignore"),
+                        use_container_width=True,
+                        hide_index=True,
+                    )
 
 
 # --------------------------------------------------------------------------
