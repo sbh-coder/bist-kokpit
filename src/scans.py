@@ -255,3 +255,61 @@ def run_scan(name: str, data: dict[str, pd.DataFrame]) -> pd.DataFrame:
             }
         )
     return pd.DataFrame(rows)
+
+
+def run_scans(names: list[str], data: dict[str, pd.DataFrame]) -> pd.DataFrame:
+    """Birden çok taramayı AYNI ANDA çalıştırır; hisse bazında ✓ matrisi döndürür.
+
+    Satırlar = en az bir taramaya uyan hisseler (en çok eşleşen en üstte).
+    Sütunlar = Kod, Fiyat, Değişim %, Eşleşme (adet) + her tarama için ✓/boş.
+    Her hisse için göstergeler yalnızca BİR kez hesaplanır (verimli).
+    """
+    names = [n for n in names if n in SCANS]
+    if not names:
+        return pd.DataFrame()
+
+    # Sütun başlıklarını kısalt (parantezi at); çakışma olursa tam adı kullan.
+    labels = {n: n.split(" (")[0] for n in names}
+    if len(set(labels.values())) < len(labels):
+        labels = {n: n for n in names}
+
+    rows = []
+    for sym, df in data.items():
+        if df is None or df.empty or len(df) < 30:
+            continue
+        try:
+            x = _prep(df)
+        except Exception:  # noqa: BLE001
+            continue
+        cells = {}
+        matched = 0
+        for n in names:
+            _, fn = SCANS[n]
+            try:
+                ok, _ = fn(x)
+            except Exception:  # noqa: BLE001
+                ok = False
+            cells[labels[n]] = "✓" if ok else ""
+            matched += 1 if ok else 0
+        if matched == 0:
+            continue
+        c = df["Close"].dropna()
+        last = float(c.iloc[-1])
+        prev = float(c.iloc[-2]) if len(c) > 1 else last
+        chg = (last / prev - 1.0) * 100.0 if prev else 0.0
+        row = {
+            "Kod": sym.replace(".IS", ""),
+            "Fiyat": round(last, 2),
+            "Değişim %": round(chg, 2),
+            "Eşleşme": matched,
+        }
+        row.update(cells)
+        rows.append(row)
+
+    if not rows:
+        return pd.DataFrame()
+    return (
+        pd.DataFrame(rows)
+        .sort_values("Eşleşme", ascending=False)
+        .reset_index(drop=True)
+    )

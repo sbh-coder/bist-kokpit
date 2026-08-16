@@ -65,15 +65,26 @@ if "watchlist" not in st.session_state:
 
 with st.sidebar:
     st.header("İzleme Listesi")
+    all_bist = st.checkbox(
+        f"🌐 Tüm BIST'i izle ({len(symbols.ALL_NAMES)} hisse)",
+        value=False,
+        help="Tüm BIST hisselerini izleme listesine alır. İlk yükleme birkaç dakika "
+        "sürebilir ve veri kaynağı (Yahoo) yoğunlukta geçici sınır koyabilir.",
+    )
     known = list(symbols.ALL_NAMES.keys())
     # Listede olmayan ama kullanıcının eklediği kodlar da seçili kalabilsin
     options = sorted(set(known) | set(st.session_state["watchlist"]))
-    st.session_state["watchlist"] = st.multiselect(
+    picked = st.multiselect(
         "Hisseler",
         options=options,
         default=st.session_state["watchlist"],
         format_func=label,
+        disabled=all_bist,
     )
+    if all_bist:
+        st.caption(f"🌐 {len(symbols.ALL_NAMES)} hisse izleniyor — ilk yükleme uzun sürebilir.")
+    else:
+        st.session_state["watchlist"] = picked
 
     custom = st.text_input("Kod ekle (örn. SOKM.IS)", value="").strip().upper()
     if custom:
@@ -91,7 +102,10 @@ with st.sidebar:
 
     st.caption(DISCLAIMER)
 
-watchlist = tuple(st.session_state["watchlist"])
+if all_bist:
+    watchlist = tuple(sorted(symbols.ALL_NAMES.keys()))
+else:
+    watchlist = tuple(st.session_state["watchlist"])
 
 st.info(DISCLAIMER, icon="⚠️")
 
@@ -260,6 +274,7 @@ with tab_chart:
                     "15 dakikalık (~15 dk gecikmeli)",
                     "Saatlik (1h)",
                     "Haftalık (1wk)",
+                    "Aylık (1mo)",
                 ],
             )
         interval_map = {
@@ -267,6 +282,7 @@ with tab_chart:
             "15 dakikalık (~15 dk gecikmeli)": ("15m", "60d"),
             "Saatlik (1h)": ("1h", "180d"),
             "Haftalık (1wk)": ("1wk", "5y"),
+            "Aylık (1mo)": ("1mo", "max"),
         }
         interval, period = interval_map[interval_label]
 
@@ -324,23 +340,53 @@ with tab_screen:
         "Tarama türü", ["Hazır taramalar", "Özel kural"], horizontal=True, key="tk_mode"
     )
 
+    if len(tk_universe) > 200 and tk_interval in ("15m", "1h"):
+        st.warning(
+            "⚠️ Çok sayıda hisseyi kısa zaman diliminde (15dk/1s) taramak uzun "
+            "sürebilir veya veri sınırına takılabilir. Günlük/haftalık önerilir."
+        )
+
     if tk_mode == "Hazır taramalar":
-        scan_name = st.selectbox("Tarama seç", options=list(scans.SCANS.keys()), key="tk_scan")
-        st.caption("ℹ️ " + scans.SCANS[scan_name][0])
+        run_all = st.checkbox(
+            "🔬 Tüm taramaları birlikte çalıştır (hisse bazında ✓ matris)",
+            value=False,
+            key="tk_all",
+        )
+        if run_all:
+            selected_scans = list(scans.SCANS.keys())
+            st.caption(
+                f"ℹ️ {len(selected_scans)} taramanın tamamı çalışacak; sonuç hisse "
+                "bazında, en çok eşleşen üstte olacak şekilde matris olarak gösterilir."
+            )
+        else:
+            selected_scans = st.multiselect(
+                "Tarama(lar) seç — bir veya birden fazla",
+                options=list(scans.SCANS.keys()),
+                default=[next(iter(scans.SCANS.keys()))],
+                key="tk_scans",
+            )
+            if len(selected_scans) == 1:
+                st.caption("ℹ️ " + scans.SCANS[selected_scans[0]][0])
+
         if st.button("🔎 Tara", type="primary", key="tk_run_preset"):
             if not tk_universe:
                 st.warning("Taranacak hisse yok.")
+            elif not selected_scans:
+                st.warning("En az bir tarama seçin.")
             else:
                 with st.spinner("Taranıyor…"):
                     d = data.get_many(
                         tuple(tk_universe), tk_interval, tk_period, tk_resample
                     )
-                    res = scans.run_scan(scan_name, d)
+                    if len(selected_scans) == 1:
+                        res = scans.run_scan(selected_scans[0], d)
+                    else:
+                        res = scans.run_scans(selected_scans, d)
                 st.write(f"**{len(res)}** hisse eşleşti (taranan: {len(d)}).")
                 if not res.empty:
                     st.dataframe(res, use_container_width=True, hide_index=True)
                 else:
-                    st.info("Bu taramaya uyan hisse bulunamadı.")
+                    st.info("Eşleşen hisse bulunamadı.")
     else:
         st.markdown("**Kendi kuralını kur:**")
         f1, f2, f3 = st.columns(3)

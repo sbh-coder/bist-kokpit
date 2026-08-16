@@ -11,9 +11,16 @@ Tüm fonksiyonlar OHLCV kolonlarını (Open/High/Low/Close/Volume) döndürür.
 """
 from __future__ import annotations
 
+import logging
+
 import pandas as pd
 import streamlit as st
 import yfinance as yf
+
+# yfinance, verisi olmayan/işlem görmeyen sembollerde stderr'e uyarı basar
+# (özellikle "Tüm BIST" taramasında çok tekrar eder). Logları temiz tutmak için
+# yfinance'in kendi kayıtçısını susturuyoruz — hatalar yine try/except ile ele alınır.
+logging.getLogger("yfinance").setLevel(logging.CRITICAL)
 
 # Önbellek süresi: veri zaten ~15 dk gecikmeli olduğundan 10 dk önbellek
 # hem hızı artırır hem de rate-limit riskini ciddi biçimde düşürür.
@@ -51,35 +58,36 @@ def get_history(symbol: str, period: str = "1y", interval: str = "1d") -> pd.Dat
     return _clean(raw)
 
 
-@st.cache_data(ttl=_CACHE_TTL, show_spinner=False)
-def get_many_daily(symbols: tuple[str, ...], period: str = "1y") -> dict[str, pd.DataFrame]:
-    """Birden çok hisse için günlük veriyi tek seferde (batched) çeker.
+# Büyük listeler (örn. tüm BIST ~800 hisse) tek istekte çekilirse Yahoo sınır
+# koyabilir (HTTP 429). Bu yüzden parça parça çekip birleştiriyoruz.
+_CHUNK = 120
 
-    Not: streamlit önbelleği için argümanlar hashlenebilir olmalı -> tuple.
+
+def _batch(
+    symbols: list[str], interval: str, period: str, resample: str | None = None
+) -> dict[str, pd.DataFrame]:
+    """Tek bir yf.download çağrısı (bir parça) -> {sym: temiz OHLCV}.
+
+    Bir parça patlarsa boş döner; diğer parçalar etkilenmez (kısmi sonuç alınır).
     """
     if not symbols:
         return {}
-    result: dict[str, pd.DataFrame] = {}
     try:
         raw = yf.download(
-            list(symbols),
-            period=period,
-            interval="1d",
-            auto_adjust=True,
-            group_by="ticker",
-            threads=True,
-            progress=False,
+            list(symbols), period=period, interval=interval, auto_adjust=True,
+            group_by="ticker", threads=True, progress=False,
         )
-    except Exception as exc:  # noqa: BLE001
-        st.warning(f"Toplu veri çekilemedi: {exc}")
+    except Exception:  # noqa: BLE001 - bu parça patladı, diğerleri devam etsin
         return {}
-
     if raw is None or raw.empty:
         return {}
 
-    # Tek sembolde multiindex olmayabilir
+    out: dict[str, pd.DataFrame] = {}
     if len(symbols) == 1:
-        return {symbols[0]: _clean(raw)}
+        cleaned = _clean(raw)
+        if resample:
+            cleaned = _resample(cleaned, resample)
+        return {symbols[0]: cleaned} if not cleaned.empty else {}
 
     for sym in symbols:
         try:
@@ -87,8 +95,21 @@ def get_many_daily(symbols: tuple[str, ...], period: str = "1y") -> dict[str, pd
         except Exception:  # noqa: BLE001 - o sembol dönmemiş olabilir
             continue
         cleaned = _clean(sub)
+        if resample:
+            cleaned = _resample(cleaned, resample)
         if not cleaned.empty:
-            result[sym] = cleaned
+            out[sym] = cleaned
+    return out
+
+
+@st.cache_data(ttl=_CACHE_TTL, show_spinner=False)
+def get_many_daily(symbols: tuple[str, ...], period: str = "1y") -> dict[str, pd.DataFrame]:
+    """Birden çok hisse için günlük OHLCV (büyük listelerde parça parça)."""
+    if not symbols:
+        return {}
+    result: dict[str, pd.DataFrame] = {}
+    for i in range(0, len(symbols), _CHUNK):
+        result.update(_batch(list(symbols[i:i + _CHUNK]), "1d", period))
     return result
 
 
@@ -116,34 +137,9 @@ def get_many(
     """
     if not symbols:
         return {}
-    try:
-        raw = yf.download(
-            list(symbols), period=period, interval=interval, auto_adjust=True,
-            group_by="ticker", threads=True, progress=False,
-        )
-    except Exception as exc:  # noqa: BLE001
-        st.warning(f"Toplu veri çekilemedi: {exc}")
-        return {}
-    if raw is None or raw.empty:
-        return {}
-
     result: dict[str, pd.DataFrame] = {}
-    if len(symbols) == 1:
-        cleaned = _clean(raw)
-        if resample:
-            cleaned = _resample(cleaned, resample)
-        return {symbols[0]: cleaned} if not cleaned.empty else {}
-
-    for sym in symbols:
-        try:
-            sub = raw[sym]
-        except Exception:  # noqa: BLE001
-            continue
-        cleaned = _clean(sub)
-        if resample:
-            cleaned = _resample(cleaned, resample)
-        if not cleaned.empty:
-            result[sym] = cleaned
+    for i in range(0, len(symbols), _CHUNK):
+        result.update(_batch(list(symbols[i:i + _CHUNK]), interval, period, resample))
     return result
 
 
