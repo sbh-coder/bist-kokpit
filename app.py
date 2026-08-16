@@ -379,10 +379,13 @@ with tab_screen:
         )
 
     tk_mode = st.radio(
-        "Tarama türü", ["Hazır taramalar", "Özel kural"], horizontal=True, key="tk_mode"
+        "Tarama türü",
+        ["Hazır taramalar", "TradingView", "Özel kural"],
+        horizontal=True,
+        key="tk_mode",
     )
 
-    if len(tk_universe) > 200 and tk_interval in ("15m", "1h"):
+    if tk_mode != "TradingView" and len(tk_universe) > 200 and tk_interval in ("15m", "1h"):
         st.warning(
             "⚠️ Çok sayıda hisseyi kısa zaman diliminde (15dk/1s) taramak uzun "
             "sürebilir veya veri sınırına takılabilir. Günlük/haftalık önerilir."
