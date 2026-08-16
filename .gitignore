@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+
+# Streamlit — gerçek parola/anahtarlar ASLA commit'lenmez
+.streamlit/secrets.toml
+
+# Yerel önbellek / veri
+data_cache/
+*.log
+
+# İşletim sistemi
+.DS_Store
+Thumbs.db

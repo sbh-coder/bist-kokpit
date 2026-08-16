@@ -1,0 +1,12 @@
+# Test edilen sürümlere sabitlendi (yerelde çalışan = Cloud'da çalışan).
+streamlit==1.61.1
+yfinance==1.6.0
+pandas==3.0.5
+numpy>=1.26
+plotly==6.9.0
+
+# Temel (fundamental) tarama + tam BIST evreni için (İş Yatırım verisi).
+# Not: borsapy lxml/openai/pymupdf gibi ek bağımlılıklar getirir; hepsinin
+# hazır wheel'i var, Streamlit Cloud'da sorunsuz kurulur. borsapy kaldırılırsa
+# uygulama yine çalışır, sadece "Temel Tarama" sekmesi devre dışı kalır.
+borsapy==0.11.0
